@@ -80,8 +80,15 @@ def init_db() -> None:
             last_updated     TEXT
         )
     """
+    territory_ddl = """
+        CREATE TABLE IF NOT EXISTS rep_territory (
+            email  TEXT PRIMARY KEY,
+            states TEXT DEFAULT ''
+        )
+    """
     with _cursor() as (backend, cur):
         cur.execute(ddl)
+        cur.execute(territory_ddl)
 
 
 def upsert_summary(summary: dict) -> int:
@@ -164,3 +171,28 @@ def uncategorized_bills() -> list[dict]:
 def clear_all() -> None:
     with _cursor() as (backend, cur):
         cur.execute("DELETE FROM bills")
+
+
+# --- per-rep territory ------------------------------------------------------
+
+def get_territory(email: str) -> list[str]:
+    with _cursor() as (backend, cur):
+        cur.execute(_q(backend, "SELECT states FROM rep_territory WHERE email=?"), (email,))
+        row = cur.fetchone()
+    if not row:
+        return []
+    states = dict(row)["states"] or ""
+    return [s for s in states.split(",") if s]
+
+
+def set_territory(email: str, states: list[str]) -> None:
+    joined = ",".join(states)
+    with _cursor() as (backend, cur):
+        if backend == "postgres":
+            cur.execute(
+                "INSERT INTO rep_territory (email, states) VALUES (%s, %s) "
+                "ON CONFLICT (email) DO UPDATE SET states=EXCLUDED.states",
+                (email, joined))
+        else:
+            cur.execute("INSERT OR REPLACE INTO rep_territory (email, states) VALUES (?, ?)",
+                        (email, joined))

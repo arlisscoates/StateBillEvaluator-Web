@@ -20,6 +20,17 @@ ACCELA_PRODUCT_LINES = [
 # Back-compat alias (some modules still import PREDEFINED_CATEGORIES).
 PREDEFINED_CATEGORIES = ACCELA_PRODUCT_LINES
 
+# US state / territory codes for rep territory selection.
+US_STATES = [
+    "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "DC", "FL", "GA", "HI", "ID",
+    "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD", "MA", "MI", "MN", "MS", "MO",
+    "MT", "NE", "NV", "NH", "NJ", "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA",
+    "RI", "SC", "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY",
+]
+
+# Only these email domains may access the app when SSO auth is enabled.
+ALLOWED_EMAIL_DOMAINS = ("accela.com",)
+
 
 def opportunity_band(score) -> str:
     """Bucket a 0-100 opportunity score into a label."""

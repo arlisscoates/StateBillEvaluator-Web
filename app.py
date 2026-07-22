@@ -22,8 +22,9 @@ except Exception:
     pass  # no secrets.toml present (e.g. local dev)
 
 import store
-from models import (LIKELIHOOD_ORDER, likelihood_meter, opportunity_badge,
-                    opportunity_band, passage_likelihood)
+from models import (ALLOWED_EMAIL_DOMAINS, LIKELIHOOD_ORDER, US_STATES,
+                    likelihood_meter, opportunity_badge, opportunity_band,
+                    passage_likelihood)
 import sample_data
 
 
@@ -36,8 +37,40 @@ def bill_score(b: dict):
     except (ValueError, AttributeError):
         return None
 
-st.set_page_config(page_title="State Bill Evaluator", page_icon="🏛️", layout="wide")
+
+def require_login() -> str:
+    """Gate the app behind SSO when [auth] is configured; return the user's email.
+
+    If no [auth] secrets are present (e.g. local dev), the app runs open and a
+    placeholder identity is used so territory still persists locally.
+    """
+    try:
+        auth_enabled = "auth" in st.secrets
+    except Exception:
+        auth_enabled = False
+
+    if not auth_enabled:
+        return "local@dev"
+
+    if not st.user.is_logged_in:
+        st.title("🏛️ Accela Legislation Radar")
+        st.write("Sign in with your Accela account to continue.")
+        if st.button("Sign in", type="primary"):
+            st.login()
+        st.stop()
+
+    email = (st.user.email or "").lower()
+    if not email.endswith(tuple(f"@{d}" for d in ALLOWED_EMAIL_DOMAINS)):
+        st.error(f"Access is restricted to Accela accounts. You are signed in as **{email}**.")
+        if st.button("Sign out"):
+            st.logout()
+        st.stop()
+    return email
+
+
+st.set_page_config(page_title="Accela Legislation Radar", page_icon="🏛️", layout="wide")
 store.init_db()
+user_email = require_login()
 
 # ---------------------------------------------------------------- settings ---
 st.sidebar.title("🏛️ Accela Legislation Radar")
@@ -61,6 +94,27 @@ if store.is_postgres():
     st.sidebar.caption("🟢 Storage: Supabase Postgres (persistent)")
 else:
     st.sidebar.caption("🟡 Storage: local SQLite (not persistent on cloud)")
+
+# ---------------------------------------------------------------- identity ---
+try:
+    _logged_in = st.secrets and "auth" in st.secrets and st.user.is_logged_in
+except Exception:
+    _logged_in = False
+if _logged_in:
+    st.sidebar.caption(f"👤 {user_email}")
+    if st.sidebar.button("Sign out", use_container_width=True):
+        st.logout()
+
+# ------------------------------------------------------------- my territory ---
+st.sidebar.subheader("My territory")
+_saved_territory = store.get_territory(user_email)
+my_states = st.sidebar.multiselect(
+    "States I cover", US_STATES, default=_saved_territory,
+    help="Bills are filtered to these states when 'My territory only' is on.")
+if set(my_states) != set(_saved_territory):
+    store.set_territory(user_email, my_states)
+territory_only = st.sidebar.checkbox(
+    "Show my territory only", value=bool(my_states), disabled=not my_states)
 
 # --------------------------------------------------------------- sync panel ---
 st.sidebar.subheader("Sync bills")
@@ -118,8 +172,14 @@ for b in bills:
     b["likelihood"] = passage_likelihood(b["status"], b["last_action"])
     b["score"] = bill_score(b)
 
+# Scope everything to the rep's territory when the toggle is on.
+if territory_only and my_states:
+    bills = [b for b in bills if b["state"] in my_states]
+
 tab_legis, tab_rank, tab_chat = st.tabs(
     ["📋 Legislation", "🎯 Opportunity Dashboard", "💬 Chat"])
+if territory_only and my_states:
+    st.caption(f"📍 Scoped to your territory: {', '.join(my_states)}")
 
 # ===== Legislation ==========================================================
 with tab_legis:
