@@ -22,15 +22,26 @@ except Exception:
     pass  # no secrets.toml present (e.g. local dev)
 
 import store
-from models import (LIKELIHOOD_ORDER, PREDEFINED_CATEGORIES, likelihood_meter,
-                    passage_likelihood)
+from models import (LIKELIHOOD_ORDER, likelihood_meter, opportunity_badge,
+                    opportunity_band, passage_likelihood)
 import sample_data
+
+
+def bill_score(b: dict):
+    """Extract the opportunity score from a bill's stored analysis, or None."""
+    if not b.get("impact_json"):
+        return None
+    try:
+        return json.loads(b["impact_json"]).get("opportunity_score")
+    except (ValueError, AttributeError):
+        return None
 
 st.set_page_config(page_title="State Bill Evaluator", page_icon="🏛️", layout="wide")
 store.init_db()
 
 # ---------------------------------------------------------------- settings ---
-st.sidebar.title("🏛️ State Bill Evaluator")
+st.sidebar.title("🏛️ Accela Legislation Radar")
+st.sidebar.caption("State bills that could drive demand for Accela products")
 
 with st.sidebar.expander("⚙️ Settings", expanded=False):
     legiscan_key = st.text_input(
@@ -105,8 +116,10 @@ if col_b.button("Clear all", use_container_width=True):
 bills = store.all_bills()
 for b in bills:
     b["likelihood"] = passage_likelihood(b["status"], b["last_action"])
+    b["score"] = bill_score(b)
 
-tab_legis, tab_rank, tab_chat = st.tabs(["📋 Legislation", "🏢 Company Rankings", "💬 Chat"])
+tab_legis, tab_rank, tab_chat = st.tabs(
+    ["📋 Legislation", "🎯 Opportunity Dashboard", "💬 Chat"])
 
 # ===== Legislation ==========================================================
 with tab_legis:
@@ -114,10 +127,10 @@ with tab_legis:
         st.info("No bills yet. Sync from LegiScan or load the sample data in the sidebar.")
     else:
         f1, f2, f3, f4 = st.columns([2, 2, 2, 1])
-        cat_filter = f1.multiselect("Category", sorted({b["category_name"] for b in bills if b["category_name"]}))
+        cat_filter = f1.multiselect("Product line", sorted({b["category_name"] for b in bills if b["category_name"]}))
         like_filter = f2.multiselect("Likelihood", LIKELIHOOD_ORDER)
         text_filter = f3.text_input("Search text", "")
-        sort_order = f4.selectbox("Sort", ["State", "Date", "Title", "Likelihood"])
+        sort_order = f4.selectbox("Sort", ["Opportunity", "State", "Date", "Title", "Likelihood"])
 
         rows = bills
         if cat_filter:
@@ -129,7 +142,9 @@ with tab_legis:
             rows = [b for b in rows if t in b["title"].lower() or t in b["state"].lower()
                     or t in (b["description"] or "").lower()]
 
-        if sort_order == "State":
+        if sort_order == "Opportunity":
+            rows.sort(key=lambda b: (b["score"] if b["score"] is not None else -1), reverse=True)
+        elif sort_order == "State":
             rows.sort(key=lambda b: b["state"])
         elif sort_order == "Date":
             rows.sort(key=lambda b: b["last_action_date"] or "", reverse=True)
@@ -141,10 +156,12 @@ with tab_legis:
         # CSV export (ported from exportCSV)
         buf = io.StringIO()
         w = csv.writer(buf)
-        w.writerow(["Bill ID", "Title", "State", "Category", "Status", "Session",
-                    "Likelihood", "Last Action", "Last Action Date", "Sponsors", "URL", "Description"])
+        w.writerow(["Bill ID", "Title", "State", "Opportunity Score", "Product Line",
+                    "Status", "Session", "Likelihood", "Last Action", "Last Action Date",
+                    "Sponsors", "URL", "Description"])
         for b in rows:
-            w.writerow([b["bill_id"], b["title"], b["state"], b["category_name"] or "",
+            w.writerow([b["bill_id"], b["title"], b["state"],
+                        b["score"] if b["score"] is not None else "", b["category_name"] or "",
                         b["status"], b["session"], b["likelihood"], b["last_action"] or "",
                         b["last_action_date"] or "", b["sponsors"] or "", b["url"], b["description"]])
         ec1, ec2 = st.columns([1, 1])
@@ -153,9 +170,9 @@ with tab_legis:
                                use_container_width=True)
         with ec2:
             analyzed = [b for b in bills if b["impact_json"]]
-            if st.button(f"🔄 Reanalyze all impact ({len(analyzed)})",
+            if st.button(f"🔄 Rescore all opportunities ({len(analyzed)})",
                          disabled=not analyzed, use_container_width=True,
-                         help="Re-run Claude impact analysis on every bill that already has one"):
+                         help="Re-run the Claude sales-opportunity scoring on every scored bill"):
                 from claude_client import ClaudeService, ClaudeError
                 try:
                     claude = ClaudeService(claude_key)
@@ -177,9 +194,11 @@ with tab_legis:
         st.caption(f"{len(rows)} of {len(bills)} bills")
 
         for b in rows:
-            header = f"{b['state']} · {b['title']}  —  {likelihood_meter(b['likelihood'])} {b['likelihood']}"
+            badge = opportunity_badge(b["score"]) if b["score"] is not None else ""
+            header = f"{badge}   {b['state']} · {b['title']}   ·   {b['likelihood']} passage"
             with st.expander(header):
-                st.markdown(f"**Category:** {b['category_name'] or '_uncategorized_'}  \n"
+                st.markdown(f"**Product line:** {b['category_name'] or '_unclassified_'}  \n"
+                            f"**Passage likelihood:** {likelihood_meter(b['likelihood'])} {b['likelihood']}  \n"
                             f"**Status:** {b['status']}  \n"
                             f"**Last action:** {b['last_action'] or '—'} ({b['last_action_date'] or '—'})  \n"
                             f"**Session:** {b['session'] or '—'}")
@@ -203,64 +222,79 @@ with tab_legis:
                     except LegiScanError as e:
                         st.error(str(e))
 
-                if bc2.button("🔍 Analyze impact with Claude", key=f"impact_{b['bill_id']}",
+                if bc2.button("🎯 Score sales opportunity", key=f"impact_{b['bill_id']}",
                               use_container_width=True):
                     from claude_client import ClaudeService, ClaudeError
                     try:
                         claude = ClaudeService(claude_key)
-                        with st.spinner("Analyzing…"):
+                        with st.spinner("Scoring with Claude…"):
                             impact = claude.analyze_impact(b["title"], b["description"])
                             store.set_impact(b["bill_id"], json.dumps(impact))
-                            b["impact_json"] = json.dumps(impact)
+                        st.rerun()
                     except ClaudeError as e:
                         st.error(str(e))
 
                 if b["impact_json"]:
-                    impact = json.loads(b["impact_json"])
-                    wc, lc = st.columns(2)
-                    with wc:
-                        st.markdown("#### 🟢 Winners")
-                        for e in impact.get("winners", []):
-                            st.markdown(f"**{e['industry']}** — {', '.join(e.get('companies', []))}")
-                            st.caption(e.get("reason", ""))
-                    with lc:
-                        st.markdown("#### 🔴 Losers")
-                        for e in impact.get("losers", []):
-                            st.markdown(f"**{e['industry']}** — {', '.join(e.get('companies', []))}")
-                            st.caption(e.get("reason", ""))
+                    a = json.loads(b["impact_json"])
+                    if "opportunity_score" in a:  # new Accela sales-signal format
+                        st.divider()
+                        st.markdown(f"### {opportunity_badge(a.get('opportunity_score'))} sales opportunity")
+                        cols = st.columns(2)
+                        cols[0].markdown(f"**Product line(s):** {', '.join(a.get('product_lines', [])) or '—'}")
+                        cols[1].markdown(f"**Likely buyer:** {a.get('buyer', '—')}")
+                        if a.get("drivers"):
+                            st.markdown("**What creates the demand:**")
+                            for d in a["drivers"]:
+                                st.markdown(f"- {d}")
+                        if a.get("why_it_matters"):
+                            st.markdown("**Why it matters to sales:**")
+                            st.info(a["why_it_matters"])
+                        if a.get("talking_point"):
+                            st.markdown(f"**Outreach hook:** _{a['talking_point']}_")
+                    else:  # legacy winners/losers analysis
+                        st.caption("Legacy analysis — click “Score sales opportunity” to refresh.")
 
-# ===== Company Rankings =====================================================
+# ===== Opportunity Dashboard ===============================================
 with tab_rank:
-    st.subheader("Company Rankings")
-    st.caption("Aggregated across every bill you've run impact analysis on.")
-    tally = defaultdict(lambda: {"wins": 0, "losses": 0, "ticker": "", "scale": ""})
-    for b in bills:
-        if not b["impact_json"]:
-            continue
-        impact = json.loads(b["impact_json"])
-        for side, key in (("winners", "wins"), ("losers", "losses")):
-            for entry in impact.get(side, []):
-                details = entry.get("company_details") or [{"name": n} for n in entry.get("companies", [])]
-                for d in details:
-                    name = d.get("name")
-                    if not name:
-                        continue
-                    tally[name][key] += 1
-                    if d.get("ticker"):
-                        tally[name]["ticker"] = d["ticker"]
-                    if d.get("scale"):
-                        tally[name]["scale"] = d["scale"]
+    st.subheader("Opportunity Dashboard")
+    st.caption("Every scored bill, ranked by how strongly it signals demand for Accela products.")
 
-    if not tally:
-        st.info("No impact analyses yet. Open a bill in the Legislation tab and click "
-                "“Analyze impact with Claude”.")
+    scored = [b for b in bills if b["score"] is not None]
+    if not scored:
+        st.info("No scored bills yet. Open a bill in the Legislation tab and click "
+                "“🎯 Score sales opportunity”.")
     else:
-        ranked = sorted(tally.items(), key=lambda kv: (kv[1]["wins"] - kv[1]["losses"]), reverse=True)
-        table = [{
-            "Company": name, "Ticker": v["ticker"], "Scale": v["scale"],
-            "Winner in": v["wins"], "Loser in": v["losses"],
-            "Net": v["wins"] - v["losses"],
-        } for name, v in ranked]
+        scored.sort(key=lambda b: b["score"], reverse=True)
+
+        # Headline metrics
+        hot = sum(1 for b in scored if opportunity_band(b["score"]) == "Hot")
+        warm = sum(1 for b in scored if opportunity_band(b["score"]) == "Warm")
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Scored bills", len(scored))
+        m2.metric("🔥 Hot (75+)", hot)
+        m3.metric("🟠 Warm (50-74)", warm)
+
+        # Count by product line
+        by_line = defaultdict(int)
+        for b in scored:
+            by_line[b["category_name"] or "Unclassified"] += 1
+        st.markdown("**Bills by product line**")
+        st.bar_chart({"bills": dict(sorted(by_line.items(), key=lambda kv: kv[1], reverse=True))})
+
+        # Ranked leaderboard
+        st.markdown("**Top opportunities**")
+        table = []
+        for b in scored:
+            a = json.loads(b["impact_json"])
+            table.append({
+                "Score": b["score"],
+                "Band": opportunity_band(b["score"]),
+                "State": b["state"],
+                "Bill": b["title"],
+                "Product line": b["category_name"] or "",
+                "Buyer": a.get("buyer", ""),
+                "Passage": b["likelihood"],
+            })
         st.dataframe(table, use_container_width=True, hide_index=True)
 
 # ===== Chat =================================================================
@@ -284,8 +318,11 @@ with tab_chat:
                 with st.spinner("Thinking…"):
                     reply = claude.chat(
                         st.session_state.chat_history,
-                        system="You are a knowledgeable assistant helping analyze U.S. "
-                               "state legislation and its market and policy impact.",
+                        system="You help Accela sales reps understand U.S. state "
+                               "legislation and where it creates demand for Accela's "
+                               "permitting, licensing, and citizen-portal govtech "
+                               "products. Be concrete about which governments must act "
+                               "(the buyers) and why a bill is or isn't a sales opening.",
                     )
                     st.markdown(reply)
             st.session_state.chat_history.append({"role": "assistant", "content": reply})
