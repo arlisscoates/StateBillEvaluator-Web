@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Streamlit local secrets (never commit API keys)
+.streamlit/secrets.toml
+
+# Local database (created at runtime in the user's home dir, but ignore if copied here)
+*.db
+.state_bill_evaluator/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
