@@ -11,6 +11,15 @@ from collections import defaultdict
 
 import streamlit as st
 
+# Bridge Streamlit secrets -> environment variables so store.py (DATABASE_URL)
+# and the API clients pick them up. Must run before store.init_db().
+try:
+    for _k in ("DATABASE_URL", "SUPABASE_DB_URL", "ANTHROPIC_API_KEY", "LEGISCAN_API_KEY"):
+        if _k in st.secrets and not os.environ.get(_k):
+            os.environ[_k] = str(st.secrets[_k])
+except Exception:
+    pass  # no secrets.toml present (e.g. local dev)
+
 import store
 from models import (LIKELIHOOD_ORDER, PREDEFINED_CATEGORIES, likelihood_meter,
                     passage_likelihood)
@@ -35,6 +44,11 @@ with st.sidebar.expander("⚙️ Settings", expanded=False):
     )
     st.session_state["legiscan_key"] = legiscan_key
     st.session_state["claude_key"] = claude_key
+
+if store.is_postgres():
+    st.sidebar.caption("🟢 Storage: Supabase Postgres (persistent)")
+else:
+    st.sidebar.caption("🟡 Storage: local SQLite (not persistent on cloud)")
 
 # --------------------------------------------------------------- sync panel ---
 st.sidebar.subheader("Sync bills")
