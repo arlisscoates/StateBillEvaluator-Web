@@ -47,3 +47,33 @@ class LegiScanService:
 
     def get_bill(self, bill_id: int) -> dict:
         return self._request({"op": "getBill", "id": str(bill_id)})["bill"]
+
+    # LegiScan numeric status codes -> human text (used by parse_detail).
+    STATUS_MAP = {
+        "1": "Introduced", "2": "Engrossed", "3": "Enrolled",
+        "4": "Passed", "5": "Vetoed", "6": "Failed / Dead",
+    }
+
+    @staticmethod
+    def parse_detail(bill: dict) -> dict:
+        """Normalize a getBill response into the fields store.set_detail expects.
+
+        Ported from SyncService.fetchBillDetail (description/status/url/session/
+        sponsors). Any field that is missing comes back as None so the caller's
+        COALESCE keeps the existing value.
+        """
+        sponsors = bill.get("sponsors") or []
+        sp = ", ".join(
+            s.get("name", "") + (f" ({s['party']})" if s.get("party") else "")
+            for s in sponsors if s.get("name")
+        )
+        status_code = bill.get("status")
+        status_text = LegiScanService.STATUS_MAP.get(str(status_code)) if status_code is not None else None
+        session = (bill.get("session") or {}).get("session_name")
+        return {
+            "description": bill.get("description"),
+            "status": status_text,
+            "url": bill.get("url") or bill.get("state_link"),
+            "session": session,
+            "sponsors": sp or None,
+        }

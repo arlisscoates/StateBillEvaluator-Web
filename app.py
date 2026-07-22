@@ -7,6 +7,7 @@ import csv
 import io
 import json
 import os
+import time
 from collections import defaultdict
 
 import streamlit as st
@@ -146,7 +147,32 @@ with tab_legis:
             w.writerow([b["bill_id"], b["title"], b["state"], b["category_name"] or "",
                         b["status"], b["session"], b["likelihood"], b["last_action"] or "",
                         b["last_action_date"] or "", b["sponsors"] or "", b["url"], b["description"]])
-        st.download_button("⬇️ Export CSV", buf.getvalue(), "bills.csv", "text/csv")
+        ec1, ec2 = st.columns([1, 1])
+        with ec1:
+            st.download_button("⬇️ Export CSV", buf.getvalue(), "bills.csv", "text/csv",
+                               use_container_width=True)
+        with ec2:
+            analyzed = [b for b in bills if b["impact_json"]]
+            if st.button(f"🔄 Reanalyze all impact ({len(analyzed)})",
+                         disabled=not analyzed, use_container_width=True,
+                         help="Re-run Claude impact analysis on every bill that already has one"):
+                from claude_client import ClaudeService, ClaudeError
+                try:
+                    claude = ClaudeService(claude_key)
+                    prog = st.progress(0.0, text="Reanalyzing…")
+                    for i, bill in enumerate(analyzed):
+                        try:
+                            impact = claude.analyze_impact(bill["title"], bill["description"])
+                            store.set_impact(bill["bill_id"], json.dumps(impact))
+                        except ClaudeError as e:
+                            st.warning(f"Failed on {bill['title'][:40]}…: {e}")
+                            break
+                        prog.progress((i + 1) / len(analyzed),
+                                      text=f"Reanalyzing… {i + 1}/{len(analyzed)}")
+                        time.sleep(0.3)  # gentle rate-limit, mirrors the macOS app
+                    st.rerun()
+                except ClaudeError as e:
+                    st.error(str(e))
 
         st.caption(f"{len(rows)} of {len(bills)} bills")
 
@@ -163,7 +189,22 @@ with tab_legis:
                 if b["url"]:
                     st.markdown(f"[View on LegiScan]({b['url']})")
 
-                if st.button("🔍 Analyze impact with Claude", key=f"impact_{b['bill_id']}"):
+                bc1, bc2 = st.columns(2)
+                if bc1.button("📄 Fetch full detail", key=f"detail_{b['bill_id']}",
+                              help="Pull description, status, session & sponsors from LegiScan",
+                              use_container_width=True):
+                    from legiscan import LegiScanService, LegiScanError
+                    try:
+                        legi = LegiScanService(legiscan_key)
+                        with st.spinner("Fetching from LegiScan…"):
+                            raw = legi.get_bill(b["bill_id"])
+                            store.set_detail(b["bill_id"], **LegiScanService.parse_detail(raw))
+                        st.rerun()
+                    except LegiScanError as e:
+                        st.error(str(e))
+
+                if bc2.button("🔍 Analyze impact with Claude", key=f"impact_{b['bill_id']}",
+                              use_container_width=True):
                     from claude_client import ClaudeService, ClaudeError
                     try:
                         claude = ClaudeService(claude_key)
